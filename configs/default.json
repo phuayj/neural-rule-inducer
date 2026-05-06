@@ -1,0 +1,78 @@
+{
+  "_comment": "Default config for Neural Rule Inducer training.",
+
+  "synthetic_only": true,
+  "train_episodes": 256,
+  "val_episodes": 128,
+  "synthetic_num_atoms": [6, 12],
+  "synthetic_num_examples": [24, 48],
+  "synthetic_max_clauses": 6,
+  "synthetic_max_literals": 4,
+
+  "spurious_env_enabled": true,
+  "num_spurious_env_features": 3,
+  "spurious_env_correlation": 0.3,
+  "spurious_env_mode": "sign_flip",
+
+  "batch_size": 8192,
+  "train_num_workers": 8,
+
+  "total_steps": 500,
+  "learning_rate": 0.0006,
+  "weight_decay": 0.01,
+  "warmup_steps": 100,
+  "gradient_clip": 1.0,
+  "use_amp": true,
+  "seed": 42,
+
+  "log_interval": 20,
+  "eval_interval": 100,
+  "save_interval": 100,
+
+  "t_max": 8,
+  "k_max": 4,
+  "literal_embed_dim": 384,
+  "literal_hidden_dim": 384,
+  "clause_hidden_dim": 384,
+
+  "gate_mode": "sigmoid",
+  "clause_topk": 1,
+  "clause_dropout": 0.25,
+  "clause_dropout_min_keep": 2,
+
+  "literal_film_enabled": true,
+  "literal_film_mode": "full",
+  "literal_film_beta_init": "orthogonal",
+  "literal_film_gamma_std": 0.5,
+
+  "literal_example_content_keys": true,
+  "literal_example_x_bottleneck": 64,
+  "literal_add_posneg_cooc": true,
+
+  "mutual_exclusion_hard": true,
+
+  "setmatch_num_layers": 3,
+  "setmatch_num_heads": 4,
+  "setmatch_dropout": 0.1,
+
+  "coverage_pos_weight": 1.0,
+  "coverage_neg_weight": 1.0,
+
+  "max_margin_coverage_enabled": true,
+  "max_margin_coverage_weight": 1.0,
+  "max_margin_coverage_pos": 0.7,
+  "max_margin_coverage_neg": 0.3,
+
+  "slot_load_balance_weight": 0.1,
+  "slot_balance_cv2_weight": 0.1,
+  "slot_activation_balance_weight": 0.05,
+
+  "cf_necessity_enabled": true,
+  "cf_necessity_weight": 0.15,
+  "cf_necessity_spurious_weight": 0.15,
+  "cf_necessity_warmup_steps": 250,
+  "cf_necessity_select_threshold": 0.3,
+  "cf_necessity_num_samples": 4,
+  "cf_necessity_overlap_weight": 0.1,
+  "cf_necessity_balance_weight": 0.01
+}
