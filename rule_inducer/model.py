@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Dict, Optional, Set, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional, Set, Tuple
 
 import torch
+from huggingface_hub import PyTorchModelHubMixin, constants, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 from torch import Tensor, nn
 from torch.nn import functional as F
+
+from ._hub import (
+    _materialize_lazy_example_proj_x,
+    _materialize_lazy_example_proj_x_from_state,
+    materialize_rule_inducer_for_hub,
+)
 
 try:
     from torch.nn import LazyLinear  # type: ignore
@@ -39,6 +50,14 @@ class LiteralFilmConfig:
     gamma_init: str = "normal"  # "normal", "ones"
     gamma_mean: float = 1.0
     gamma_std: float = 0.5  # 5x larger than typical; breaks symmetry
+
+
+def _coerce_literal_film_config(
+    config: LiteralFilmConfig | Mapping[str, Any] | None,
+) -> LiteralFilmConfig | None:
+    if config is None or isinstance(config, LiteralFilmConfig):
+        return config
+    return LiteralFilmConfig(**dict(config))
 
 
 def _build_length_mask(lengths: Tensor, max_len: int) -> Tensor:
@@ -947,7 +966,24 @@ class RuleAggregator(nn.Module):
         )
 
 
-class RuleInducer(nn.Module):
+class RuleInducer(
+    nn.Module,
+    PyTorchModelHubMixin,
+    library_name="rule-inducer",
+    tags=[
+        "rule-induction",
+        "neuro-symbolic",
+        "logic-programming",
+        "ilp",
+        "interpretability",
+        "zero-shot",
+        "pytorch",
+    ],
+    repo_url="https://github.com/phuayj/neural-rule-inducer",
+    paper_url="https://arxiv.org/abs/2605.04916",
+    license="mit",
+    pipeline_tag="other",
+):
     """High-level module that wires together encoder, composer, and aggregator."""
 
     def __init__(
@@ -964,7 +1000,7 @@ class RuleInducer(nn.Module):
         setmatch_num_layers: int = 3,
         setmatch_num_heads: int = 4,
         setmatch_dropout: float = 0.1,
-        literal_film_config: LiteralFilmConfig | None = None,
+        literal_film_config: LiteralFilmConfig | dict[str, Any] | None = None,
         literal_add_posneg_cooc: bool = True,
         literal_example_content_keys: bool = True,
         literal_example_x_bottleneck: int = 64,
@@ -973,6 +1009,7 @@ class RuleInducer(nn.Module):
         clause_dropout_min_keep: int = 1,
     ):
         super().__init__()
+        literal_film_config = _coerce_literal_film_config(literal_film_config)
         self.literal_encoder = LiteralStatsEncoder(
             embed_dim=literal_embed_dim,
             hidden_dim=literal_hidden_dim,
@@ -1013,6 +1050,122 @@ class RuleInducer(nn.Module):
             clause_dropout=clause_dropout,
             clause_dropout_min_keep=clause_dropout_min_keep,
         )
+
+    def _save_pretrained(self, save_directory: Path) -> None:
+        """Save Hub inference weights after materializing lazy projection layers."""
+        model_to_save = self.module if hasattr(self, "module") else self
+        materialize_rule_inducer_for_hub(model_to_save)
+        state_dict = model_to_save.state_dict()
+
+        try:
+            from safetensors.torch import save_file
+
+            save_file(state_dict, str(Path(save_directory) / constants.SAFETENSORS_SINGLE_FILE))
+        except ImportError:
+            torch.save(state_dict, Path(save_directory) / constants.PYTORCH_WEIGHTS_NAME)
+
+    @classmethod
+    def _from_pretrained(
+        cls,
+        *,
+        model_id: str,
+        revision: str | None,
+        cache_dir: str | Path | None,
+        force_download: bool,
+        local_files_only: bool,
+        token: str | bool | None,
+        map_location: str = "cpu",
+        strict: bool = False,
+        **model_kwargs: Any,
+    ) -> "RuleInducer":
+        """Load Hub inference weights with LazyLinear materialized from saved shapes."""
+        literal_film_config = model_kwargs.get("literal_film_config")
+        if isinstance(literal_film_config, Mapping):
+            model_kwargs["literal_film_config"] = LiteralFilmConfig(
+                **dict(literal_film_config)
+            )
+
+        model = cls(**model_kwargs)
+        model_file = cls._resolve_hub_weight_file(
+            model_id=model_id,
+            revision=revision,
+            cache_dir=cache_dir,
+            force_download=force_download,
+            local_files_only=local_files_only,
+            token=token,
+        )
+        state_dict = cls._load_hub_state_dict(model_file, map_location=map_location)
+        _materialize_lazy_example_proj_x_from_state(model.literal_encoder, state_dict)
+        model.load_state_dict(state_dict, strict=strict)
+        _materialize_lazy_example_proj_x(model.literal_encoder)
+        model.to(torch.device(map_location))
+        model.eval()
+        return model
+
+    @staticmethod
+    def _resolve_hub_weight_file(
+        *,
+        model_id: str,
+        revision: str | None,
+        cache_dir: str | Path | None,
+        force_download: bool,
+        local_files_only: bool,
+        token: str | bool | None,
+    ) -> Path:
+        if os.path.isdir(model_id):
+            model_dir = Path(model_id)
+            safetensors_path = model_dir / constants.SAFETENSORS_SINGLE_FILE
+            if safetensors_path.exists():
+                return safetensors_path
+            return model_dir / constants.PYTORCH_WEIGHTS_NAME
+
+        try:
+            return Path(
+                hf_hub_download(
+                    repo_id=model_id,
+                    filename=constants.SAFETENSORS_SINGLE_FILE,
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    token=token,
+                    local_files_only=local_files_only,
+                )
+            )
+        except EntryNotFoundError:
+            return Path(
+                hf_hub_download(
+                    repo_id=model_id,
+                    filename=constants.PYTORCH_WEIGHTS_NAME,
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    token=token,
+                    local_files_only=local_files_only,
+                )
+            )
+
+    @staticmethod
+    def _load_hub_state_dict(
+        model_file: Path,
+        *,
+        map_location: str,
+    ) -> dict[str, Tensor]:
+        if model_file.name == constants.SAFETENSORS_SINGLE_FILE:
+            try:
+                from safetensors.torch import load_file
+            except ImportError as exc:
+                raise ImportError(
+                    "Loading model.safetensors requires the optional safetensors package."
+                ) from exc
+            return load_file(str(model_file), device=map_location)
+        loaded = torch.load(
+            model_file,
+            map_location=torch.device(map_location),
+            weights_only=True,
+        )
+        if not isinstance(loaded, Mapping):
+            raise ValueError(f"Hub weight file must contain a state dict: {model_file}")
+        return {str(k): v for k, v in loaded.items() if isinstance(v, torch.Tensor)}
 
     def forward(
         self,
